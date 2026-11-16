@@ -1,0 +1,17 @@
+[package]
+name = "trha-recipe-ffi"
+version.workspace = true
+edition.workspace = true
+description = "C ABI FFI bridge for deepseek-recipe: JSON-in/JSON-out for Haskell FFI integration."
+license.workspace = true
+
+[lib]
+name = "trha_recipe_ffi"
+crate-type = ["cdylib"]
+
+[dependencies]
+deepseek-recipe = { workspace = true }
+deepseek-recipe-core = { workspace = true }
+deepseek-recipe-encoding = { workspace = true }
+serde_json = { workspace = true }
+tokenizers = { workspace = true }

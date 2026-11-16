@@ -8,6 +8,7 @@ members = [
     "deepseek-recipe-python",
     "encoding-decoding-demo",
     "server-rs",
+    "trha-recipe-ffi",
 ]
 resolver = "3"
 
