@@ -528,11 +528,18 @@ fn dispatch(op: &str, payload: &str) -> Result<serde_json::Value, serde_json::Va
             let prompt_tokens = as_u32("prompt_tokens")?;
             let context_limit = as_u32("context_limit")?;
 
-            let top_p = converted.model_version.resolve_top_p(
-                None,
-                converted.conversation.thinking_mode,
-                !converted.conversation.tools.is_empty(),
-            );
+            // top_p：适配器转换时已按请求值解析进 inference_options；缺失
+            // （协议层未给）再按模型版本+模式重算默认
+            let top_p = converted
+                .inference_options
+                .top_p
+                .unwrap_or_else(|| {
+                    converted.model_version.resolve_top_p(
+                        None,
+                        converted.conversation.thinking_mode,
+                        !converted.conversation.tools.is_empty(),
+                    )
+                });
             let max_tokens = converted
                 .resolve_max_tokens(prompt_tokens, context_limit)
                 .map_err(|e| serde_json::json!({"error": e.to_string()}))?;

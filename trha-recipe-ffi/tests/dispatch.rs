@@ -255,3 +255,24 @@ fn encode_omits_ids_by_default_and_includes_on_flag() {
     let v2 = call("encode", &json!({"kind": "cc", "request": cc_request(), "ids": true}));
     assert!(v2["token_ids"].is_array(), "ids=true must return token_ids: {v2}");
 }
+
+#[test]
+fn resolve_limits_returns_requested_top_p_from_inference_options() {
+    ensure_init();
+    // 请求带 top_p=0.7：thinking 模式上限 0.95，适配器解析成终值 0.95
+    // （既不是请求原值 0.7，也不是无请求时的默认 1.0）——这就是要校准的语义
+    let v = call(
+        "resolve_limits",
+        &json!({
+            "kind": "cc",
+            "request": {"model": "DeepSeek-V4.1-Flash",
+                        "messages": [{"role": "user", "content": "hi"}],
+                        "top_p": 0.7},
+            "prompt_tokens": 100,
+            "context_limit": 1_000_000
+        }),
+    );
+    assert!(v.get("error").is_none(), "{v}");
+    let top_p = v["top_p"].as_f64().unwrap();
+    assert!((top_p - 0.95).abs() < 1e-6, "thinking top_p cap surfaces: {v}");
+}
