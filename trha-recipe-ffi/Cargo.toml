@@ -7,11 +7,17 @@ license.workspace = true
 
 [lib]
 name = "trha_recipe_ffi"
-crate-type = ["cdylib"]
+crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 deepseek-recipe = { workspace = true }
 deepseek-recipe-core = { workspace = true }
 deepseek-recipe-encoding = { workspace = true }
+serde = { workspace = true }
 serde_json = { workspace = true }
+tokenizers = { workspace = true }
+tokio = { workspace = true }
+tokio-stream = { workspace = true }
+
+[dev-dependencies]
 tokenizers = { workspace = true }

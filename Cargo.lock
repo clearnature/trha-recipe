@@ -2629,8 +2629,11 @@ dependencies = [
  "deepseek-recipe",
  "deepseek-recipe-core",
  "deepseek-recipe-encoding",
+ "serde",
  "serde_json",
  "tokenizers",
+ "tokio",
+ "tokio-stream",
 ]
 
 [[package]]
