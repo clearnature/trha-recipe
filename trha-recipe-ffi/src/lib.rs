@@ -475,11 +475,16 @@ fn dispatch(op: &str, payload: &str) -> Result<serde_json::Value, serde_json::Va
                     DeepseekV4Encoding::new().encode(&converted.conversation)
                 }
                 .map_err(|e| serde_json::json!({"error": e.to_string()}))?;
-                return Ok(serde_json::json!({
-                    "token_ids": ids,
+                // ids=false（默认）只回 count——50 万 token 的响应不该默认全量回传
+                let want_ids = v.get("ids").and_then(|b| b.as_bool()).unwrap_or(false);
+                let mut out = serde_json::json!({
                     "count": ids.len(),
                     "model_version": format!("{:?}", converted.model_version),
-                }));
+                });
+                if want_ids {
+                    out["token_ids"] = serde_json::json!(ids);
+                }
+                return Ok(out);
             }
 
             let rendered = if use_v41 {
@@ -511,7 +516,7 @@ fn dispatch(op: &str, payload: &str) -> Result<serde_json::Value, serde_json::Va
             let count = lock.v41.encode(&conv).map(|ids| ids.len()).unwrap_or(0);
             Ok(serde_json::json!({"count": count}))
         }
-        "resolve_limits" => {
+        "resolve_limits" | "limits" => {
             let v = parse_payload()?;
             let converted = convert_request(kind_of(&v), &request_of(&v)?)?;
             let as_u32 = |key: &str| -> Result<u32, serde_json::Value> {

@@ -185,7 +185,7 @@ fn encode_counts_prompt_tokens() {
     assert!(v.get("error").is_none(), "encode failed: {v}");
     let count = v["count"].as_u64().unwrap();
     assert!(count > 0, "non-empty prompt must encode to >0 tokens");
-    assert_eq!(v["token_ids"].as_array().unwrap().len() as u64, count);
+    assert!(v.get("token_ids").is_none(), "ids are opt-in since the ids flag");
 }
 
 #[test]
@@ -243,4 +243,15 @@ fn dispatch_matches_legacy_entry_points() {
     let modern = call("render", &json!({"kind": "cc", "request": cc_request()}));
     assert_eq!(legacy["prompt"], modern["prompt"]);
     assert_eq!(legacy["special_ranges"], modern["special_ranges"]);
+}
+
+#[test]
+fn encode_omits_ids_by_default_and_includes_on_flag() {
+    ensure_init();
+    let v = call("encode", &json!({"kind": "cc", "request": cc_request()}));
+    assert!(v.get("token_ids").is_none(), "ids must be opt-in: {v}");
+    assert!(v["count"].as_u64().unwrap() > 0);
+
+    let v2 = call("encode", &json!({"kind": "cc", "request": cc_request(), "ids": true}));
+    assert!(v2["token_ids"].is_array(), "ids=true must return token_ids: {v2}");
 }
