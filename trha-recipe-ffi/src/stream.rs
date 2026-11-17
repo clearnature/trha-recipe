@@ -18,6 +18,7 @@
 //! | `finish` | `finish_reason: "stop"\|"length"\|"content_filter"` |
 
 use std::collections::VecDeque;
+use std::future::Future;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
@@ -38,6 +39,11 @@ use tokio_stream::StreamExt;
 
 /// Internal tokio runtime — small on purpose: this lives inside the host
 /// process and only drives chunk parsing, not inference.
+/// image.rs 复用同一 runtime 跑异步 resolve。
+pub(crate) fn block_on<F: Future>(fut: F) -> F::Output {
+    runtime().block_on(fut)
+}
+
 fn runtime() -> &'static tokio::runtime::Runtime {
     static RT: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
     RT.get_or_init(|| {

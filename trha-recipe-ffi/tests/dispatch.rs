@@ -276,3 +276,65 @@ fn resolve_limits_returns_requested_top_p_from_inference_options() {
     let top_p = v["top_p"].as_f64().unwrap();
     assert!((top_p - 0.95).abs() < 1e-6, "thinking top_p cap surfaces: {v}");
 }
+
+// ── image 子系统 ─────────────────────────────────────────────────────
+
+/// 用 image crate 现场生成一张 PNG（红 64×48），避免 fixture 依赖。
+fn red_png(width: u32, height: u32) -> Vec<u8> {
+    use std::io::Cursor;
+    let img = image::DynamicImage::ImageRgb8(image::RgbImage::from_fn(width, height, |_x, _y| {
+        image::Rgb([255u8, 0, 0])
+    }));
+    let mut out = Cursor::new(Vec::new());
+    image::DynamicImage::write_to(&img, &mut out, image::ImageFormat::Png).expect("png encodes");
+    out.into_inner()
+}
+
+#[test]
+fn image_token_spec_matches_library_math() {
+    // 大图（≥min_pixels）：token 数 ≤ 上限 1024
+    let v = call("image_token_spec", &json!({"width": 1024, "height": 768}));
+    assert!(v.get("error").is_none(), "{v}");
+    let tokens = v["token_count"].as_u64().unwrap();
+    assert!(tokens > 0 && tokens <= 1024, "token budget respected: {v}");
+    assert_eq!(v["max_token_count"], 1024);
+
+    // 小图被放大到 min 面积（544*544）后再对齐 patch
+    let small = call("image_token_spec", &json!({"width": 64, "height": 48}));
+    let st = small["token_count"].as_u64().unwrap();
+    assert!(st > 0, "small image still costs tokens: {small}");
+
+    // 两种尺寸的 token 数不同（数学不为常数）
+    assert_ne!(tokens, st);
+}
+
+#[test]
+fn image_resolve_data_url_preprocesses_and_counts_tokens() {
+    let png = red_png(64, 48);
+    use base64::Engine as _;
+    let b64 = base64::engine::general_purpose::STANDARD.encode(&png);
+    let v = call(
+        "image_resolve",
+        &json!({
+            "sources": [{"kind": "data_url",
+                         "data_url": format!("data:image/png;base64,{b64}"),
+                         "path": "red.png"}]
+        }),
+    );
+    assert!(v.get("error").is_none(), "resolve failed: {v}");
+    let imgs = v["images"].as_array().unwrap();
+    assert_eq!(imgs.len(), 1);
+    assert!(imgs[0]["width"].as_u64().unwrap() >= 1);
+    assert!(imgs[0]["token_count"].as_u64().unwrap() > 0);
+    assert_eq!(v["image_count"], 1);
+}
+
+#[test]
+fn image_resolve_rejects_private_url_hosts() {
+    let v = call(
+        "image_resolve",
+        &json!({"sources": [{"kind": "url", "url": "http://127.0.0.1:9/a.png"}]}),
+    );
+    // 默认 SSRF 防护：环回地址在 DNS/连接前就被拒
+    assert!(v.get("error").is_some(), "private host must be rejected: {v}");
+}

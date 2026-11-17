@@ -26,6 +26,7 @@
 use std::ffi::{c_char, CStr, CString};
 use std::sync::{Mutex, MutexGuard, OnceLock};
 
+mod image;
 mod stream;
 
 pub use stream::{
@@ -585,6 +586,8 @@ fn dispatch(op: &str, payload: &str) -> Result<serde_json::Value, serde_json::Va
             .collect();
             Ok(serde_json::json!({"model_versions": versions}))
         }
+        "image_token_spec" => image::op_image_token_spec(payload).map_err(|e| e),
+        "image_resolve" => image::op_image_resolve(payload).map_err(|e| e),
         "version" => Ok(serde_json::json!({"version": env!("CARGO_PKG_VERSION")})),
         other => Err(serde_json::json!({"error": format!("unknown operation: {other}")})),
     }

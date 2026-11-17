@@ -2626,9 +2626,12 @@ dependencies = [
 name = "trha-recipe-ffi"
 version = "0.2.0"
 dependencies = [
+ "base64 0.22.1",
  "deepseek-recipe",
  "deepseek-recipe-core",
  "deepseek-recipe-encoding",
+ "deepseek-recipe-image",
+ "image",
  "serde",
  "serde_json",
  "tokenizers",

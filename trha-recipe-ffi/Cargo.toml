@@ -18,6 +18,13 @@ serde_json = { workspace = true }
 tokenizers = { workspace = true }
 tokio = { workspace = true }
 tokio-stream = { workspace = true }
+# 不走 workspace 继承：workspace 根的声明隐含 default features（OpenCV），
+# 而本机无 OpenCV——server-rs 同样直接声明，是既有先例。
+deepseek-recipe-image = { version = "0.2.0", path = "../deepseek-recipe-image", default-features = false, features = ["reqwest-fetch"] }
+image = { workspace = true }
+base64 = { workspace = true }
 
 [dev-dependencies]
 tokenizers = { workspace = true }
+image = { workspace = true }
+base64 = { workspace = true }
