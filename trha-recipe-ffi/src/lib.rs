@@ -55,6 +55,9 @@ static STATE: OnceLock<Mutex<FFIState>> = OnceLock::new();
 /// V4.1 encoding with tokenizer.
 struct FFIState {
     v41: DeepseekV41Encoding,
+    /// 裸 tokenizer：encode_text（纯文本 → token IDs，无对话框架）用。
+    /// CPU 产生器 / 真后端 tokenizer 都走它。
+    tokenizer: Option<Tokenizer>,
 }
 
 /// Convert a Rust string to a C string pointer for FFI return.
@@ -90,7 +93,7 @@ pub extern "C" fn recipe_init(tokenizer_path: *const c_char) -> *mut c_char {
         Ok(tok) => {
             let prompt_tok = PromptTokenizer::new(&tok);
             let encoding = DeepseekV41Encoding::new().with_tokenizer(prompt_tok);
-            let _ = STATE.set(Mutex::new(FFIState { v41: encoding }));
+            let _ = STATE.set(Mutex::new(FFIState { v41: encoding, tokenizer: Some(tok) }));
             serde_json::json!({"ok": true})
         }
         Err(e) => serde_json::json!({"ok": false, "error": e.to_string()}),
@@ -585,6 +588,23 @@ fn dispatch(op: &str, payload: &str) -> Result<serde_json::Value, serde_json::Va
             })
             .collect();
             Ok(serde_json::json!({"model_versions": versions}))
+        }
+        "encode_text" => {
+            let v = parse_payload()?;
+            let text = v
+                .get("text")
+                .and_then(|t| t.as_str())
+                .ok_or_else(|| serde_json::json!({"error": "missing text"}))?;
+            let lock = state_v41().map_err(|e| e)?;
+            let tok = lock
+                .tokenizer
+                .as_ref()
+                .ok_or_else(|| serde_json::json!({"error": "tokenizer not loaded"}))?;
+            let encoding = tok
+                .encode(text, false)
+                .map_err(|e| serde_json::json!({"error": e.to_string()}))?;
+            let ids: Vec<u32> = encoding.get_ids().to_vec();
+            Ok(serde_json::json!({"token_ids": ids, "count": ids.len()}))
         }
         "image_token_spec" => image::op_image_token_spec(payload).map_err(|e| e),
         "image_resolve" => image::op_image_resolve(payload).map_err(|e| e),

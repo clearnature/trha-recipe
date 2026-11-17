@@ -338,3 +338,17 @@ fn image_resolve_rejects_private_url_hosts() {
     // 默认 SSRF 防护：环回地址在 DNS/连接前就被拒
     assert!(v.get("error").is_some(), "private host must be rejected: {v}");
 }
+
+#[test]
+fn encode_text_maps_added_vocab_and_plain_text() {
+    ensure_init();
+    // added-vocab token（</think>、｜DSML｜）必须成为独立 token——流解析语义的基础
+    let v = call("encode_text", &json!({"text": "思考</think>答案<｜DSML｜invoke"}));
+    assert!(v.get("error").is_none(), "{v}");
+    let ids = v["token_ids"].as_array().unwrap();
+    assert!(ids.len() > 3, "multi-token: {v}");
+    // </think> = 128822、｜DSML｜ = 128825（vendored 词表实测）
+    let nums: Vec<u64> = ids.iter().map(|x| x.as_u64().unwrap()).collect();
+    assert!(nums.contains(&128822), "</think> must be its own token: {v}");
+    assert!(nums.contains(&128825), "｜DSML｜ must be its own token: {v}");
+}
