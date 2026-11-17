@@ -352,3 +352,85 @@ fn encode_text_maps_added_vocab_and_plain_text() {
     assert!(nums.contains(&128822), "</think> must be its own token: {v}");
     assert!(nums.contains(&128825), "｜DSML｜ must be its own token: {v}");
 }
+
+#[test]
+fn stream_open_smoke_via_dispatch_error_path() {
+    ensure_init();
+    let v = call("convert", &json!({
+        "kind": "cc",
+        "request": {"model": "DeepSeek-V4.1-Flash", "stream": true,
+                    "messages": [{"role": "user", "content": "本地推理测试"}],
+                    "tools": [{"type": "function",
+                               "function": {"name": "cpu_read", "description": "读取本地文件",
+                                            "parameters": {"type": "object"}}}]}
+    }));
+    assert!(v.get("error").is_none(), "convert with tools must work: {v}");
+}
+
+#[test]
+fn stream_open_direct_c_abi_smoke() {
+    use std::ffi::{CStr, CString};
+    ensure_init();
+    let kind = CString::new("cc").unwrap();
+    let req = CString::new(cc_request().to_string()).unwrap();
+    let tok = CString::new(tokenizer_path()).unwrap();
+    let rid = CString::new("chatcmpl-rs").unwrap();
+    let model = CString::new("DeepSeek-V4.1-Flash").unwrap();
+    let ptr = trha_recipe_ffi::recipe_stream_open(
+        kind.as_ptr(), req.as_ptr(), tok.as_ptr(), rid.as_ptr(), model.as_ptr());
+    assert!(!ptr.is_null(), "stream open returned null");
+    let s = unsafe { CStr::from_ptr(ptr) }.to_str().unwrap();
+    let v: Value = serde_json::from_str(s).expect("reply is JSON");
+    trha_recipe_ffi::recipe_free_string(ptr);
+    assert!(v.get("error").is_none(), "open failed: {v}");
+    let h = v["handle"].as_u64().expect("handle present");
+    let aptr = trha_recipe_ffi::recipe_stream_abort(h);
+    trha_recipe_ffi::recipe_free_string(aptr);
+}
+
+#[test]
+fn stream_full_ffi_chain_produces_reasoning_and_content() {
+    use std::ffi::{CStr, CString};
+    ensure_init();
+    let tok = CString::new(tokenizer_path()).unwrap();
+    let req = CString::new(cc_request().to_string()).unwrap();
+    let kind = CString::new("cc").unwrap();
+    let rid = CString::new("chatcmpl-ffi2").unwrap();
+    let model = CString::new("DeepSeek-V4.1-Flash").unwrap();
+
+    let ptr = trha_recipe_ffi::recipe_stream_open(
+        kind.as_ptr(), req.as_ptr(), tok.as_ptr(), rid.as_ptr(), model.as_ptr());
+    assert!(!ptr.is_null(), "open null");
+    let v: Value = serde_json::from_str(
+        unsafe { CStr::from_ptr(ptr) }.to_str().unwrap()).unwrap();
+    trha_recipe_ffi::recipe_free_string(ptr);
+    let h = v["handle"].as_u64().expect("handle");
+
+    let c = CString::new(r#"{"type":"ready","prompt_tokens":12,"prompt_cache_hit_tokens":0}"#).unwrap();
+    let r = trha_recipe_ffi::recipe_stream_feed(h, c.as_ptr());
+    let ready: Value = serde_json::from_str(
+        unsafe { CStr::from_ptr(r) }.to_str().unwrap()).unwrap();
+    trha_recipe_ffi::recipe_free_string(r);
+    assert!(ready["chunks"].as_array().map_or(false, |a| !a.is_empty()),
+            "ready must emit start chunks: {ready}");
+
+    let tokz = tokenizers::Tokenizer::from_file(
+        std::path::Path::new(&tokenizer_path())).expect("tokenizer loads");
+    let ids = tokz.encode("本地推理思考中。</think>本地推理应答完成。", false)
+        .expect("encodes").get_ids().to_vec();
+    let c = CString::new(serde_json::to_string(&serde_json::json!(
+        {"type":"tokens","token_ids":ids})).unwrap()).unwrap();
+    let r2 = trha_recipe_ffi::recipe_stream_feed(h, c.as_ptr());
+    let v2: Value = serde_json::from_str(
+        unsafe { CStr::from_ptr(r2) }.to_str().unwrap()).unwrap();
+    trha_recipe_ffi::recipe_free_string(r2);
+    let reasoning = v2["chunks"].as_array().unwrap().iter()
+        .filter_map(|c| c["choices"][0]["delta"]["reasoning_content"].as_str())
+        .collect::<String>();
+    assert!(!reasoning.is_empty(), "reasoning must be non-empty: {v2}");
+
+    let r3 = trha_recipe_ffi::recipe_stream_close(h, std::ptr::null());
+    let v3: Value = serde_json::from_str(
+        unsafe { CStr::from_ptr(r3) }.to_str().unwrap()).unwrap();
+    assert!(v3.get("error").is_none(), "close failed: {v3}");
+}

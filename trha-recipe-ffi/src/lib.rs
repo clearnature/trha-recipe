@@ -398,7 +398,10 @@ pub extern "C" fn recipe_dispatch(
     let result = dispatch(&op, &payload);
     match result {
         Ok(v) => to_cstr(v.to_string()),
-        Err(e) => to_cstr(e.to_string()),
+        Err(e) => {
+            eprintln!("[recipe-ffi] dispatch error ({}): {}", op, e);
+            to_cstr(e.to_string())
+        }
     }
 }
 

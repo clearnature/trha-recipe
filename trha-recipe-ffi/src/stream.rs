@@ -47,8 +47,9 @@ pub(crate) fn block_on<F: Future>(fut: F) -> F::Output {
 fn runtime() -> &'static tokio::runtime::Runtime {
     static RT: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
     RT.get_or_init(|| {
-        tokio::runtime::Builder::new_multi_thread()
-            .worker_threads(2)
+        // current_thread：block_on 由宿主（GHC）线程驱动——multi-thread 的
+        // worker 在 GHC RTS 里曾被观测为静默不产出
+        tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
             .expect("build stream runtime")
@@ -89,6 +90,7 @@ async fn run_pipeline<G>(
                 let Ok(v) = serde_json::to_value(&chunk) else {
                     break;
                 };
+                eprintln!("[recipe-ffi] pipeline chunk: {}", v);
                 out.lock().expect("out lock").push_back(v);
             }
             Err(e) => {
@@ -174,6 +176,100 @@ fn drain(out: &Arc<Mutex<VecDeque<Value>>>, error: &Arc<Mutex<Option<String>>>) 
         Some(m) => json!({"chunks": chunks, "error": m}),
         None => json!({"chunks": chunks}),
     }
+}
+
+/// 同步跑一轮：token IDs → StreamProcessor → CC chunks（Value 数组）。
+/// W4 CPU 产生器/真后端的单轮解析入口（无跨 FFI 会话句柄）。
+pub fn run_tokens_once(
+    kind: &str,
+    request_json: &str,
+    tokenizer_path: Option<String>,
+    response_id: &str,
+    model: &str,
+    ids: Vec<u32>,
+) -> Result<Vec<Value>, String> {
+    let opts = deepseek_recipe::request::ConversionOptions::default();
+    let converted = match kind {
+        "cc" => {
+            let req: ChatCompletionRequest = serde_json::from_str(request_json)
+                .map_err(|e| format!("deserialize: {e}"))?;
+            req.convert(opts).map_err(|e| format!("convert: {e}"))
+        }
+        "responses" => {
+            let req: ResponsesRequest = serde_json::from_str(request_json)
+                .map_err(|e| format!("deserialize: {e}"))?;
+            req.convert(opts).map_err(|e| format!("convert: {e}"))
+        }
+        "anthropic" => {
+            let req: MessagesRequest = serde_json::from_str(request_json)
+                .map_err(|e| format!("deserialize: {e}"))?;
+            req.convert(opts).map_err(|e| format!("convert: {e}"))
+        }
+        other => return Err(format!("unknown protocol kind: {other}")),
+    }?;
+
+    let tokenizer: Option<Tokenizer> = match tokenizer_path {
+        Some(ref p) if !p.is_empty() => {
+            Some(Tokenizer::from_file(p).map_err(|e| format!("load tokenizer: {e}"))?)
+        }
+        _ => None,
+    };
+
+    // 按 kind 构造具体 generator（ChunkGenerator 是 AFIT，不可 dyn）——
+    // 三条分支共用 run_with 驱动
+    match kind {
+        "cc" => {
+            let generator2 = ChatCompletionRequest::chunk_generator(
+                &converted, response_id.to_string(), model.to_string());
+            run_with(StreamProcessor::new(generator2, converted.parsing_options.clone()),
+                     tokenizer, ids)
+        }
+        "responses" => {
+            let generator2 = ResponsesRequest::chunk_generator(
+                &converted, response_id.to_string(), model.to_string());
+            run_with(StreamProcessor::new(generator2, converted.parsing_options.clone()),
+                     tokenizer, ids)
+        }
+        "anthropic" => {
+            let generator2 = MessagesRequest::chunk_generator(
+                &converted, response_id.to_string(), model.to_string());
+            run_with(StreamProcessor::new(generator2, converted.parsing_options.clone()),
+                     tokenizer, ids)
+        }
+        _ => unreachable!(),
+    }
+}
+
+/// 泛型驱动：InferenceChunk 流（Tokens + Finish）→ CC chunks（JSON 数组）。
+fn run_with<G>(
+    processor: StreamProcessor<G>,
+    tokenizer: Option<Tokenizer>,
+    ids: Vec<u32>,
+) -> Result<Vec<Value>, String>
+where
+    G: ChunkGenerator,
+    G::Chunk: Serialize + Send,
+{
+    let mut processor = match tokenizer {
+        Some(tok) => processor.with_tokenizer(tok),
+        None => processor,
+    };
+    let inference = tokio_stream::iter(vec![
+        InferenceChunk::Tokens { token_ids: ids, logprobs: None },
+        InferenceChunk::Finish { finish_reason: InferenceFinishReason::Stop },
+    ]);
+    block_on(async move {
+        let protocol_stream = processor.into_protocol_stream(inference);
+        let mut protocol = std::pin::pin!(protocol_stream);
+        let mut outs = Vec::new();
+        while let Some(item) = tokio_stream::StreamExt::next(&mut protocol).await {
+            match item {
+                Ok(chunk) => outs.push(serde_json::to_value(&chunk).unwrap_or(Value::Null)),
+                Err(e) => return Err(format!("stream: {e}")),
+            }
+        }
+        Ok(outs)
+    })
 }
 
 fn open_session(
@@ -348,6 +444,7 @@ pub extern "C" fn recipe_stream_open(
             unsafe { CStr::from_ptr(p) }.to_string_lossy().into_owned()
         }
     };
+    eprintln!("[recipe-ffi] stream open: kind={}", s(kind));
     let result = open_session(
         &s(kind),
         &s(request_json),
@@ -358,11 +455,14 @@ pub extern "C" fn recipe_stream_open(
         &s(response_id),
         &s(model),
     );
+    eprintln!("[recipe-ffi] stream open result: is_ok={} err={:?}", result.is_ok(), result.as_ref().err());
     let v = match result {
         Ok(id) => json!({"handle": id}),
         Err(e) => json!({"error": e}),
     };
-    crate::to_cstr_pub(v.to_string())
+    let reply = v.to_string();
+    eprintln!("[recipe-ffi] stream open reply: {}", reply);
+    crate::to_cstr_pub(reply)
 }
 
 /// Feed one inference chunk. Returns `{"chunks": [...], "error"?: "..."}`.
@@ -403,6 +503,44 @@ pub extern "C" fn recipe_stream_close(
 pub extern "C" fn recipe_stream_abort(handle: u64) -> *mut c_char {
     let v = match abort_session(handle) {
         Ok(v) => v,
+        Err(e) => json!({"error": e}),
+    };
+    crate::to_cstr_pub(v.to_string())
+}
+
+/// 同步单轮：token IDs → CC chunks。入参 JSON：
+/// {"kind":"cc","request":{...},"tokenizer_path":"…","ids":[…],"response_id":"…","model":"…"}
+/// 返回 {"chunks":[...]}（不含会话句柄——一次性解析用）。
+#[unsafe(no_mangle)]
+pub extern "C" fn recipe_stream_run(
+    kind: *const c_char,
+    request_json: *const c_char,
+    tokenizer_path: *const c_char,
+    ids_json: *const c_char,
+    response_id: *const c_char,
+    model: *const c_char,
+) -> *mut c_char {
+    let s = |p: *const c_char| -> String {
+        if p.is_null() {
+            String::new()
+        } else {
+            unsafe { CStr::from_ptr(p) }.to_string_lossy().into_owned()
+        }
+    };
+    let ids: Vec<u32> = serde_json::from_str(&s(ids_json)).unwrap_or_default();
+    let result = run_tokens_once(
+        &s(kind),
+        &s(request_json),
+        {
+            let p = s(tokenizer_path);
+            if p.is_empty() { None } else { Some(p) }
+        },
+        &s(response_id),
+        &s(model),
+        ids,
+    );
+    let v = match result {
+        Ok(chunks) => json!({"chunks": chunks}),
         Err(e) => json!({"error": e}),
     };
     crate::to_cstr_pub(v.to_string())
